@@ -23,6 +23,8 @@ _main_site_generated = False
 _main_site_lang = "en"
 _main_siteurl = ''
 _lang_siteurls = None
+_orginal_output_path = None
+_orginal_siteurl = ''
 logger = logging.getLogger(__name__)
 
 
@@ -33,8 +35,11 @@ def disable_lang_vars(pelican_obj):
     e.g. ARTICLE_LANG_URL = ARTICLE_URL
     They would conflict with this plugin otherwise
     """
-    global _main_site_lang, _main_siteurl, _lang_siteurls
+    global _main_site_lang, _main_siteurl, _lang_siteurls, _orginal_output_path, _orginal_siteurl
+
     s = pelican_obj.settings
+
+
     for content in ['ARTICLE', 'PAGE']:
         for meta in ['_URL', '_SAVE_AS']:
             s[content + '_LANG' + meta] = s[content + meta]
@@ -45,8 +50,13 @@ def disable_lang_vars(pelican_obj):
         # To be able to use url for main site root when SITEURL == '' (e.g. when developing)
         _lang_siteurls = [(_main_site_lang, ('/' if _main_siteurl == '' else _main_siteurl))] + _lang_siteurls
         _lang_siteurls = OrderedDict(_lang_siteurls)
-        
 
+        _orginal_siteurl = s['SITEURL']
+        _orginal_output_path = pelican_obj.output_path
+        pelican_obj.output_path +=  '/' + _main_site_lang + '/'
+        s['OUTPUT_PATH'] = pelican_obj.output_path
+
+    s['SITEURL'] = _orginal_siteurl + '/' + s['DEFAULT_LANG']
     
 def create_lang_subsites(pelican_obj):
     """For each language create a subsite using the lang-specific config
@@ -67,7 +77,7 @@ def create_lang_subsites(pelican_obj):
         settings = orig_settings.copy()
         settings.update(overrides)
         settings['SITEURL'] = _lang_siteurls[lang]
-        settings['OUTPUT_PATH'] = os.path.join(orig_settings['OUTPUT_PATH'], lang, '')
+        settings['OUTPUT_PATH'] = os.path.join(_orginal_output_path, lang, '')
         settings['DEFAULT_LANG'] = lang   # to change what is perceived as translations
         settings['DELETE_OUTPUT_DIRECTORY'] = False  # prevent deletion of previous runs
         settings = configure_settings(settings)      # to set LOCALE, etc.
@@ -79,7 +89,8 @@ def create_lang_subsites(pelican_obj):
             cls = getattr(module, cls_name)
 
         pelican_obj = cls(settings)
-        logger.debug("Generating i18n subsite for lang '{}' using class '{}'".format(lang, str(cls)))
+        logger.warning("Generating i18n subsite for lang '{}' using class '{}'".format(lang, str(cls)))
+        logger.warning(pelican_obj.output_path)
         pelican_obj.run()
     _main_site_generated = False          # for autoreload mode
 
@@ -92,14 +103,24 @@ def move_translations_links(content_object):
     or directs an original DEFAULT_LANG translation back to top level site
     """
     for translation in content_object.translations:
-        if translation.lang == _main_site_lang:
-        # cannot prepend, must take to top level
-            lang_prepend = '../'
-        else:
-            lang_prepend = translation.lang + '/'
+        lang_prepend = '../' +  translation.lang + '/'
         translation.override_url =  lang_prepend + translation.url
 
+def update_generator_contents_static(generator, *args):
+    print("update_generator_contents_static")
 
+    if generator.settings['DEFAULT_LANG'] == _main_site_lang:
+        return
+
+    for staticfile in generator.staticfiles:
+        if not staticfile.get_relative_source_path() in generator.settings['EXTRA_PATH_METADATA']:
+            lang_prepend = '../' + _main_site_lang + '/'
+            staticfile.override_url     = lang_prepend + staticfile.url
+            staticfile.override_save_as = lang_prepend + staticfile.save_as
+        else:
+            print("Skip: " + str(staticfile))
+    generator.settings['THEME_STATIC_PATHS'] = []
+    generator._update_context(('staticfiles',))
 
 def update_generator_contents(generator, *args):
     """Update the contents lists of a generator
@@ -111,8 +132,10 @@ def update_generator_contents(generator, *args):
     Hide content without a translation for current DEFAULT_LANG
     if HIDE_UNTRANSLATED_CONTENT is True
     """
+    print("update_generator_contents")
     generator.translations = []
     is_pages_gen = hasattr(generator, 'pages')
+
     if is_pages_gen:
         generator.hidden_translations = []
         for page in chain(generator.pages, generator.hidden_pages):
@@ -184,6 +207,7 @@ def install_templates_translations(generator):
 def register():
     signals.initialized.connect(disable_lang_vars)
     signals.generator_init.connect(install_templates_translations)
+    signals.static_generator_finalized.connect(update_generator_contents_static)
     signals.article_generator_finalized.connect(update_generator_contents)
     signals.page_generator_finalized.connect(update_generator_contents)
     signals.finalized.connect(create_lang_subsites)
