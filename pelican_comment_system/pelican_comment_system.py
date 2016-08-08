@@ -157,7 +157,7 @@ def add_static_comments(gen, content):
 
     if not os.path.isdir(folder):
         logger.debug("No comments found for: %s", content.slug)
-        write_feed(gen, [], context, content.slug)
+        #write_feed(gen, [], context, content.slug)
         return
 
     reader = Readers(gen.settings)
